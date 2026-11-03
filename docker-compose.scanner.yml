@@ -1,0 +1,34 @@
+services:
+  scanner-worker:
+    build:
+      context: .
+      dockerfile: scanner-worker/Dockerfile
+    environment:
+      PORT: 4100
+      WORKER_API_SECRET: ${WORKER_API_SECRET:?Set WORKER_API_SECRET in the deployment environment}
+      MAX_ARCHIVE_SIZE: ${MAX_ARCHIVE_SIZE:-26214400}
+      MAX_EXTRACTED_SIZE: ${MAX_EXTRACTED_SIZE:-262144000}
+      MAX_ARCHIVE_FILES: ${MAX_ARCHIVE_FILES:-5000}
+      MAX_COMPRESSION_RATIO: ${MAX_COMPRESSION_RATIO:-100}
+      TRIVY_CACHE_DIR: /var/lib/trivy
+    networks: [scanner-private]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 2g
+    cpus: 2.0
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+      - /var/lib/secureship/tmp:size=512m,mode=0700
+    volumes:
+      - trivy-cache:/var/lib/trivy:ro
+    restart: unless-stopped
+
+networks:
+  scanner-private:
+    internal: true
+
+volumes:
+  trivy-cache:
+    name: secureship-trivy-cache

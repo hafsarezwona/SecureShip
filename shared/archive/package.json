@@ -1,0 +1,10 @@
+{
+  "name": "@secureship/archive",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "exports": "./index.js",
+  "dependencies": {
+    "yauzl": "^3.4.0"
+  }
+}

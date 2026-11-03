@@ -1,0 +1,29 @@
+rules:
+  - id: secureship.javascript.dynamic-code-evaluation
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: Dynamic code evaluation can enable code injection.
+    metadata:
+      cwe: [CWE-95]
+      category: security
+    pattern: eval(...)
+
+  - id: secureship.python.unsafe-pickle-load
+    languages: [python]
+    severity: ERROR
+    message: Deserializing untrusted data with pickle can execute attacker-controlled code.
+    metadata:
+      cwe: [CWE-502]
+      category: security
+    pattern-either:
+      - pattern: pickle.loads(...)
+      - pattern: pickle.load(...)
+
+  - id: secureship.python.unsafe-yaml-load
+    languages: [python]
+    severity: WARNING
+    message: YAML loading without a safe loader may construct arbitrary objects.
+    metadata:
+      cwe: [CWE-502]
+      category: security
+    pattern: yaml.load($DATA)
