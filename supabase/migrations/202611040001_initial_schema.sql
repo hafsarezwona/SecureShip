@@ -109,6 +109,10 @@ create table if not exists public.scan_jobs (
 create index if not exists projects_user_created_idx on public.projects(user_id, created_at desc);
 create index if not exists scans_user_created_idx on public.scans(user_id, created_at desc);
 create index if not exists scans_project_created_idx on public.scans(project_id, created_at desc);
+-- Supports the backend's bounded recovery query for queued and interrupted scans.
+create index if not exists scans_worker_recovery_idx
+  on public.scans (created_at asc)
+  where status in ('queued', 'scanning', 'analyzing');
 create index if not exists findings_user_severity_idx on public.findings(user_id, severity, status);
 create index if not exists findings_scan_idx on public.findings(scan_id);
 create index if not exists remediations_user_created_idx on public.remediations(user_id, created_at desc);

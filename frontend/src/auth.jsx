@@ -15,7 +15,9 @@ export function AuthProvider({ children }) {
       setReady(true)
     }).catch(() => { if (alive) setReady(true) })
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => setUser(session?.user ?? null))
-    return () => { alive = false; subscription.unsubscribe() }
+    const handleExpiredSession = () => setUser(null)
+    window.addEventListener('secureship:auth-expired', handleExpiredSession)
+    return () => { alive = false; subscription.unsubscribe(); window.removeEventListener('secureship:auth-expired', handleExpiredSession) }
   }, [])
 
   const value = useMemo(() => ({

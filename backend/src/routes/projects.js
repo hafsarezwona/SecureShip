@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { z } from 'zod'
 import { requireUser } from '../middleware/auth.js'
+import { getWorkspaceForUser } from '../services/billing.js'
 
 const router = Router()
 const projectSchema = z.object({
@@ -21,7 +22,9 @@ router.get('/', async (req, res, next) => {
 router.post('/', async (req, res, next) => {
   const parsed = projectSchema.safeParse(req.body)
   if (!parsed.success) return res.status(400).json({ error: { message: 'Enter a project name and valid project details.' } })
-  const { data, error } = await req.db.from('projects').insert({ ...parsed.data, user_id: req.user.id }).select('id,name,description,primary_language,framework,created_at,updated_at').single()
+  const workspace = await getWorkspaceForUser(req.db, req.user.id)
+  if (!workspace) return res.status(403).json({ error: { message: 'No workspace is assigned to this account.' } })
+  const { data, error } = await req.db.from('projects').insert({ ...parsed.data, user_id: req.user.id, workspace_id: workspace.workspace_id }).select('id,name,description,primary_language,framework,created_at,updated_at').single()
   if (error) return next(error)
   res.status(201).json({ project: data })
 })

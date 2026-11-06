@@ -1,4 +1,21 @@
 services:
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    env_file:
+      - backend/.env
+    environment:
+      PORT: 4000
+      WORKER_INTERNAL_URL: http://scanner-worker:4100
+    depends_on:
+      scanner-worker:
+        condition: service_started
+    networks: [api-egress, scanner-private]
+    ports:
+      - "127.0.0.1:${API_HOST_PORT:-4000}:4000"
+    restart: unless-stopped
+
   scanner-worker:
     build:
       context: .
@@ -20,14 +37,16 @@ services:
     cpus: 2.0
     tmpfs:
       - /tmp:size=32m,mode=1777
-      - /var/lib/secureship/tmp:size=512m,mode=0700
+      - /var/lib/secureship/tmp:size=512m,uid=1000,gid=1000,mode=0700
     volumes:
       - trivy-cache:/var/lib/trivy:ro
     restart: unless-stopped
 
 networks:
+  api-egress: {}
   scanner-private:
     internal: true
+    name: secureship-scanner-private
 
 volumes:
   trivy-cache:

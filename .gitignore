@@ -10,3 +10,5 @@ backend/tmp/
 scanner-worker/tmp/
 scanner-worker/cache/
 coverage/
+
+.vscode/

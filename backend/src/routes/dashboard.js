@@ -1,5 +1,7 @@
 import { Router } from 'express'
 import { requireUser } from '../middleware/auth.js'
+import { getBillingStatus, getWorkspaceForUser } from '../services/billing.js'
+import { adminClient } from '../lib/supabase.js'
 
 const router = Router()
 router.use(requireUser)
@@ -13,12 +15,18 @@ router.get('/', async (req, res, next) => {
   ])
   const failure = projects.error || scans.error || openFindings.error || verifiedFindings.error
   if (failure) return next(failure)
+  let billing = null
+  try {
+    const workspace = await getWorkspaceForUser(req.db, req.user.id)
+    if (workspace) billing = await getBillingStatus({ db: req.db, usageDb: adminClient(), workspaceId: workspace.workspace_id })
+  } catch (error) { return next(error) }
   res.json({
     projects: projects.data,
     totalScans: scans.count || 0,
     openFindings: openFindings.count || 0,
     verifiedFindings: verifiedFindings.count || 0,
     recentScans: scans.data.map(scan => ({ ...scan, project_name: scan.projects?.name || 'Project' })),
+    billing,
   })
 })
 

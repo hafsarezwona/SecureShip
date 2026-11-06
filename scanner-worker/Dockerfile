@@ -1,7 +1,7 @@
 FROM node:22.16.0-bookworm-slim
 
 ARG SEMGREP_VERSION=1.163.0
-ARG TRIVY_VERSION=0.76.0-16-g1f93b251d
+ARG TRIVY_VERSION=0.76.1
 
 ENV NODE_ENV=production \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -24,7 +24,8 @@ RUN apt-get update \
 WORKDIR /app
 COPY scanner-worker/package*.json ./
 COPY shared/archive /shared/archive
-RUN npm install --omit=dev
+RUN npm ci --omit=dev --prefix /shared/archive \
+    && npm ci --omit=dev
 COPY scanner-worker/src ./src
 COPY scanner-worker/rules ./rules
 RUN mkdir -p /var/lib/secureship/tmp /var/lib/trivy \

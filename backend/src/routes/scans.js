@@ -6,10 +6,13 @@ import os from 'node:os'
 import path from 'node:path'
 import multer from 'multer'
 import { z } from 'zod'
-import { env, hasScanOrchestrator } from '../config/env.js'
+import { env, hasScanner } from '../config/env.js'
 import { adminClient } from '../lib/supabase.js'
 import { requireUser } from '../middleware/auth.js'
 import { archiveLimits, ArchiveValidationError, inspectZip } from '@secureship/archive'
+import { runScanJob } from '../services/scanning/scan-runner.js'
+import { isScannerWorkerReady } from '../services/scanning/worker-client.js'
+import { getBillingStatus, getWorkspaceForUser } from '../services/billing.js'
 
 const router = Router()
 const tempDirectory = env.SCAN_TEMP_DIRECTORY || os.tmpdir()
@@ -37,7 +40,11 @@ async function uploadPrivateFile(accessToken, filePath, objectPath) {
     duplex: 'half',
     signal: AbortSignal.timeout(30000),
   })
-  if (!response.ok) throw new Error('Private source storage rejected the upload.')
+  if (!response.ok) {
+    const error = new Error('Private source storage rejected the upload.')
+    error.code = `PRIVATE_STORAGE_HTTP_${response.status}`
+    throw error
+  }
 }
 
 async function removePrivateFile(client, objectPath) {
@@ -62,14 +69,17 @@ router.get('/:scanId/status', async (req, res, next) => {
 })
 
 router.post('/', (req, res, next) => {
-  if (!hasScanOrchestrator) return res.status(503).json({ error: { message: 'Secure scanning is not configured. Set up private storage, the isolated worker, and the authenticated n8n workflow first.' } })
-  upload.single('file')(req, res, error => {
-    if (error) {
-      if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: { message: 'The ZIP exceeds the configured compressed upload limit.' } })
-      return next(error)
-    }
-    next()
-  })
+  if (!hasScanner) return res.status(503).json({ error: { message: 'Secure scanning is not configured. Set up private storage and the isolated scanner worker first.' } })
+  isScannerWorkerReady().then(ready => {
+    if (!ready) return res.status(503).json({ error: { message: 'The isolated scanner worker is not reachable. Start it and check its Trivy database configuration.' } })
+    upload.single('file')(req, res, error => {
+      if (error) {
+        if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: { message: 'The ZIP exceeds the configured compressed upload limit.' } })
+        return next(error)
+      }
+      next()
+    })
+  }).catch(next)
 }, async (req, res, next) => {
   let objectPath
   let scanId
@@ -82,6 +92,10 @@ router.post('/', (req, res, next) => {
     if (!idempotencyKey.success) return res.status(400).json({ error: { message: 'A valid Idempotency-Key is required.' } })
 
     const accessToken = req.get('authorization').replace(/^Bearer\s+/i, '')
+    const workspace = await getWorkspaceForUser(req.db, req.user.id)
+    if (!workspace) return res.status(403).json({ error: { message: 'No workspace is assigned to this account.' } })
+    const billing = await getBillingStatus({ db: req.db, usageDb: adminClient(), workspaceId: workspace.workspace_id })
+    if (billing.usage.scanLimit !== null && billing.usage.scansThisPeriod >= billing.usage.scanLimit) return res.status(403).json({ error: { message: 'Free plan scan limit reached. Upgrade to Premium for unlimited scans.' } })
     const { data: project, error: projectError } = await req.db.from('projects').select('id,name,primary_language,framework').eq('id', projectId.data).maybeSingle()
     if (projectError) return next(projectError)
     if (!project) return res.status(404).json({ error: { message: 'Project not found.' } })
@@ -99,29 +113,17 @@ router.post('/', (req, res, next) => {
     scanId = randomUUID()
     objectPath = `${req.user.id}/${projectId.data}/${scanId}.zip`
     await uploadPrivateFile(accessToken, req.file.path, objectPath)
-    const { error: scanError } = await admin.from('scans').insert({ id: scanId, project_id: projectId.data, user_id: req.user.id, status: 'queued', source_file_path: objectPath })
+    const { error: scanError } = await admin.from('scans').insert({ id: scanId, project_id: projectId.data, user_id: req.user.id, workspace_id: workspace.workspace_id, status: 'queued', source_file_path: objectPath })
     if (scanError) throw new Error('The scan record could not be created.')
     const { error: jobError } = await admin.from('scan_jobs').insert({ scan_id: scanId, user_id: req.user.id, status: 'queued', idempotency_key: idempotencyKey.data, request_hash: requestHash })
     if (jobError) throw new Error('The scan job could not be created.')
 
-    const { data: signed, error: signedError } = await req.db.storage.from(env.SUPABASE_STORAGE_BUCKET).createSignedUrl(objectPath, 60)
-    if (signedError || !signed?.signedUrl) throw new Error('A temporary private source URL could not be created.')
-    const signedUrl = signed.signedUrl.startsWith('http') ? signed.signedUrl : `${env.SUPABASE_URL.replace(/\/$/, '')}/storage/v1${signed.signedUrl}`
-    const webhook = await fetch(env.N8N_SCAN_WEBHOOK_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${env.N8N_INTERNAL_SECRET}`, 'Idempotency-Key': idempotencyKey.data },
-      body: JSON.stringify({ scanId, project: { id: project.id, name: project.name, language: project.primary_language, framework: project.framework }, source: { url: signedUrl, fileName: 'source.zip', size: req.file.size, sha256: requestHash }, archive: metadata }),
-      signal: AbortSignal.timeout(10000),
-    })
-    if (!webhook.ok) throw new Error('The scan orchestrator did not accept the job.')
-    await Promise.all([
-      admin.from('scans').update({ status: 'scanning', started_at: new Date().toISOString() }).eq('id', scanId),
-      admin.from('scan_jobs').update({ status: 'running', started_at: new Date().toISOString() }).eq('scan_id', scanId),
-    ])
-    res.status(202).json({ scanId, status: 'scanning', archive: { entryCount: metadata.entryCount, fileCount: metadata.fileCount } })
+    res.status(202).json({ scanId, status: 'queued', archive: { entryCount: metadata.entryCount, fileCount: metadata.fileCount } })
+    setImmediate(() => { runScanJob({ scanId, userId: req.user.id, admin }).catch(() => console.error('Scan job could not be started')) })
   } catch (error) {
     if (error instanceof ArchiveValidationError) return res.status(400).json({ error: { message: error.message } })
     if (scanId && admin) {
+      console.error('Scan setup failed:', error?.code || error?.name || 'UnknownError')
       await Promise.all([
         admin.from('scans').update({ status: 'failed', source_file_path: null, error_message: 'Scan setup failed before scanning started.', completed_at: new Date().toISOString() }).eq('id', scanId),
         admin.from('scan_jobs').update({ status: 'failed', error_message: 'Scan setup failed before scanning started.', completed_at: new Date().toISOString() }).eq('scan_id', scanId),
